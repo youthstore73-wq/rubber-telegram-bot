@@ -1,0 +1,31 @@
+name: Daily Rubber Price Telegram Post
+
+on:
+  schedule:
+    # 02:30 UTC = 09:00 Myanmar time, Monday-Friday
+    - cron: "30 2 * * 1-5"
+  workflow_dispatch:
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Post rubber prices to Telegram
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          TZ: Asia/Yangon
+          RTAS_URL: https://www.rtas.sg/rubber-prices/
+        run: python bot.py
