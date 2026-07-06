@@ -93,52 +93,92 @@ def extract_rtas_price_date(page_html: str) -> str | None:
     return _clean(match.group(1)) if match else None
 
 
-def _parse_section(lines: list[str], start_index: int, product: str) -> list[RubberContract]:
+def _parse_contract_rows(block: str, product: str) -> list[RubberContract]:
+    """Parse RTAS futures rows from a text block.
+
+    RTAS sometimes renders the table with normal line breaks and sometimes as
+    compressed text, so this parser searches by month names instead of relying
+    on one exact HTML/table format.
+    """
     rows: list[RubberContract] = []
-    in_prices = False
+    month_order = {
+        "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
+        "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12,
+    }
+    current_year: int | None = None
+    previous_month_num: int | None = None
 
-    for line in lines[start_index + 1 :]:
-        if any(stop in line for stop in [
-            "SICOM RSS 3 Rubber Futures",
-            "SICOM TSR 20 FOB Rubber Futures",
-            "Reference Prices for Physical Rubber",
-            "Archives",
-            "Download Daily Price PDF",
-        ]):
-            break
+    # Matches: Aug 2026 280-4, Sep 265-5, Jan 2027 260-4
+    pattern = re.compile(
+        r"\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b\s*"
+        r"(\d{4})?\s+"
+        r"(\d{2,4}(?:[-.]\d{1,2})?)\b",
+        flags=re.I,
+    )
 
-        if "Month Settlement Price" in line:
-            in_prices = True
-            continue
-        if not in_prices:
-            continue
+    for match in pattern.finditer(block):
+        mon_raw, year_raw, price = match.groups()
+        mon = mon_raw[:3].title()
+        mon_num = month_order[mon]
 
-        match = re.match(r"^([A-Z][a-z]{2}(?:\s+\d{4})?)\s+(\d+(?:[-.]\d+)?)$", line)
-        if match:
-            month, price = match.groups()
-            rows.append(RubberContract(product=product, month=month, raw_price=price))
+        if year_raw:
+            current_year = int(year_raw)
+        elif current_year is not None and previous_month_num is not None and mon_num < previous_month_num:
+            current_year += 1
+
+        previous_month_num = mon_num
+        month_label = f"{mon} {current_year}" if current_year else mon
+        rows.append(RubberContract(product=product, month=month_label, raw_price=price))
 
     return rows
 
 
+def _extract_between(text: str, start_marker: str, end_markers: list[str]) -> str | None:
+    start = re.search(re.escape(start_marker), text, flags=re.I)
+    if not start:
+        return None
+    start_pos = start.end()
+    end_positions: list[int] = []
+    for marker in end_markers:
+        m = re.search(re.escape(marker), text[start_pos:], flags=re.I)
+        if m:
+            end_positions.append(start_pos + m.start())
+    end_pos = min(end_positions) if end_positions else len(text)
+    return text[start_pos:end_pos]
+
+
 def parse_rtas_prices(page_html: str) -> list[RubberContract]:
-    """Parse only SGX RSS3 and TSR20 settlement tables from RTAS."""
+    """Parse SGX RSS3 and TSR20 settlement rows from RTAS robustly."""
     soup = BeautifulSoup(page_html, "lxml")
-    lines = [_clean(line) for line in soup.get_text("\n", strip=True).splitlines()]
-    lines = [line for line in lines if line]
+    text = _clean(soup.get_text(" ", strip=True))
 
     contracts: list[RubberContract] = []
-    product_markers = {
-        "SICOM RSS 3 Rubber Futures": "SGX SICOM RSS3",
-        "SICOM TSR 20 FOB Rubber Futures": "SGX SICOM TSR20 FOB",
-    }
 
-    for i, line in enumerate(lines):
-        for marker, product in product_markers.items():
-            if marker.lower() == line.lower():
-                contracts.extend(_parse_section(lines, i, product))
+    rss3_block = _extract_between(
+        text,
+        "SICOM RSS 3 Rubber Futures",
+        ["SICOM TSR 20 FOB Rubber Futures", "Reference Prices for Physical Rubber", "Archives"],
+    )
+    if rss3_block:
+        contracts.extend(_parse_contract_rows(rss3_block, "SGX SICOM RSS3"))
 
-    return contracts
+    tsr20_block = _extract_between(
+        text,
+        "SICOM TSR 20 FOB Rubber Futures",
+        ["Reference Prices for Physical Rubber", "Archives", "Download Daily Price PDF"],
+    )
+    if tsr20_block:
+        contracts.extend(_parse_contract_rows(tsr20_block, "SGX SICOM TSR20 FOB"))
+
+    # Safety filter: keep only realistic SGX rubber futures values.
+    # This prevents MRB physical rubber rows like CV/L/5/10/20 from leaking in.
+    clean_contracts: list[RubberContract] = []
+    for c in contracts:
+        value = _to_float(c.normalized_price)
+        if value is not None and 50 <= value <= 500:
+            clean_contracts.append(c)
+
+    return clean_contracts
 
 
 def fetch_yahoo_quote(symbol: str, name: str, unit: str) -> MarketQuote | None:
@@ -399,3 +439,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
