@@ -2,7 +2,15 @@ name: Daily Rubber Price Telegram Post
 
 on:
   schedule:
-    - cron: "30 6 * * 1-5"
+    # Myanmar time 09:00 AM
+    - cron: "30 2 * * *"
+
+    # Myanmar time 01:00 PM
+    - cron: "30 6 * * *"
+
+    # Myanmar time 05:00 PM
+    - cron: "30 10 * * *"
+
   workflow_dispatch:
 
 jobs:
